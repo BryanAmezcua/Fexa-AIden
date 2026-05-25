@@ -1,0 +1,14 @@
+{
+  "name": "qa-bot",
+  "version": "1.0.0",
+  "description": "Automated QA testing bot for Fexy-Zamo using Playwright",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs",
+    "setup": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "playwright": "^1.52.0"
+  }
+}
