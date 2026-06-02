@@ -1,8 +1,16 @@
 #!/bin/bash
+# scripts/jira-fetch.sh — Fetch a single Jira ticket's full details.
+#
+# Reads the Jira API token from the Fexa-AIden repo root (one level up from this script).
+# Prints raw JSON from /rest/api/3/issue/{key} so callers can parse with jq.
+#
+# Usage: jira-fetch.sh <TICKET-KEY>  (e.g., TANGO-123)
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOKEN_FILE="$SCRIPT_DIR/token"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+TOKEN_FILE="$REPO_ROOT/token"
 
 if [[ -z "${1:-}" ]]; then
   echo "Usage: $0 <TICKET-KEY>  (e.g., TANGO-123)" >&2

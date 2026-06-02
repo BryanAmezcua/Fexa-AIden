@@ -1,10 +1,16 @@
 #!/bin/bash
-# Lists attachments on a Jira issue. Outputs TSV: id<TAB>filename<TAB>content_url
-# Usage: fetch_attachments.sh <TICKET-KEY>
+# scripts/jira-attachments.sh — List attachments on a Jira issue.
+#
+# Reads the Jira API token from the Fexa-AIden repo root (one level up from this script).
+# Outputs TSV: id<TAB>filename<TAB>content_url
+#
+# Usage: jira-attachments.sh <TICKET-KEY>
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOKEN_FILE="$SCRIPT_DIR/token"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+TOKEN_FILE="$REPO_ROOT/token"
 EMAIL='bryan@trakref.com'
 HOST='https://facilitiesexchange.atlassian.net'
 

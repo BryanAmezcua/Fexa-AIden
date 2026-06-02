@@ -1,7 +1,7 @@
 {
-  "name": "qa-bot",
+  "name": "fexa-aiden",
   "version": "1.0.0",
-  "description": "Automated QA testing bot for Fexy-Zamo using Playwright",
+  "description": "Junior/mid-level dev assistant for the Fexy-Zamo codebase. Claude Code skill with list, brief, and qa modes for Jira ticket triage and automated AC verification.",
   "type": "module",
   "scripts": {
     "test": "node run.mjs",

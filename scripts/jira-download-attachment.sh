@@ -1,12 +1,18 @@
 #!/bin/bash
-# Downloads a single Jira attachment by ID into _attachments/.
-# Usage: download_attachment.sh <TICKET-KEY> <ATTACHMENT-ID> [output-filename]
+# scripts/jira-download-attachment.sh — Download a single Jira attachment by ID.
+#
+# Reads the Jira API token from the Fexa-AIden repo root (one level up from this script).
+# Saves the file under <repo-root>/_attachments/ (gitignored).
+#
+# Usage: jira-download-attachment.sh <TICKET-KEY> <ATTACHMENT-ID> [output-filename]
 # Output filename defaults to "<KEY>_attachment_<ID>.bin" if not given.
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOKEN_FILE="$SCRIPT_DIR/token"
-ATTACH_DIR="$SCRIPT_DIR/_attachments"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+TOKEN_FILE="$REPO_ROOT/token"
+ATTACH_DIR="$REPO_ROOT/_attachments"
 EMAIL='bryan@trakref.com'
 HOST='https://facilitiesexchange.atlassian.net'
 

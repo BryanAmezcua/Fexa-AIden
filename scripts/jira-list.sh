@@ -1,8 +1,16 @@
 #!/bin/bash
+# scripts/jira-list.sh — List tickets assigned to the user across all open sprints.
+#
+# Reads the Jira API token from the Fexa-AIden repo root (one level up from this script).
+# Outputs a compact TSV table: KEY  TYPE  STATUS  PRIORITY  SUMMARY
+#
+# Requires: curl, jq, column (use WSL on Windows; Git Bash typically lacks jq/column).
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOKEN_FILE="$SCRIPT_DIR/token"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+TOKEN_FILE="$REPO_ROOT/token"
 
 if [[ ! -f "$TOKEN_FILE" ]]; then
   echo "ERROR: token file missing at $TOKEN_FILE" >&2

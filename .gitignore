@@ -2,6 +2,9 @@ node_modules/
 tmp/
 screenshots/
 reports/
+auth/
+_attachments/
+specs/
 *.token
 token
 .env
