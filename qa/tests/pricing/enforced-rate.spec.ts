@@ -55,6 +55,17 @@ const EXPIRED_PRODUCT_ID   = 22;
 const REFERENCE_PRODUCT_NAME = 'Overtime Rate';
 const REFERENCE_PRODUCT_ID   = 24;
 
+// Second enforced product at a DIFFERENT flat rate — drives enforced→enforced re-select.
+const SECOND_ENFORCED_PRODUCT_NAME = 'Regular Rate';
+const SECOND_ENFORCED_PRODUCT_ID   = 23;
+const SECOND_ENFORCED_RATE         = 90;
+
+// Enforced pricing whose effective_end_date == the WO completion date (2026-04-28) —
+// drives the inclusive date-boundary case (must still lock on the last valid day).
+const BOUNDARY_PRODUCT_NAME = 'Regency';
+const BOUNDARY_PRODUCT_ID   = 27;
+const BOUNDARY_RATE         = 110;
+
 // --- Helpers ---------------------------------------------------------------
 
 async function waitForFexaApp(page: Page): Promise<void> {
@@ -767,6 +778,106 @@ test.describe('Lock rate field when enforcement is ON (TANGO-5)', () => {
     await captureAcSnapshot(testInfo, page, 'after', {
       focus: unitPriceLocator(page),
       label: `"${EXPIRED_PRODUCT_NAME}" selected — only pricing is 2020-dated, so get_pricing's date filter drops it, Rate stays editable`,
+    });
+
+    await cancelLineItemForm(page);
+  });
+
+  test('Re-selecting from an unenforced to an enforced product engages the lock', async ({ page }, testInfo) => {
+    // Edge1 (affirmative half): the lock must APPEAR mid-form when re-selecting
+    // into an enforced product after starting on a non-enforced one.
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_5_AC.Edge1, TANGO_5_AC.RateLocking1] });
+    test.skip(testInfo.project.name !== 'admin', 'Run once as admin');
+
+    await gotoInvoice(page, 'invoice', SUBCONTRACTOR_INVOICE_ID);
+    await openNewLineItemForm(page);
+    await test.step(`Set Product Class = "Labor", Product = "${NO_MATCH_PRODUCT_NAME}" (no pricing) → Rate editable`, async () => {
+      await selectProduct(page, NO_MATCH_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      const s = await unitPriceState(page);
+      expect(s.hasLockClass).toBe(false);
+      expect(s.helperPresent).toBe(false);
+    });
+    await captureAcSnapshot(testInfo, page, 'before', {
+      focus: unitPriceLocator(page),
+      label: `"${NO_MATCH_PRODUCT_NAME}" selected — Rate editable, no lock`,
+    });
+
+    await test.step(`Re-select Product = "${ENFORCED_PRODUCT_NAME}" (enforced) → the lock must engage`, async () => {
+      await selectProduct(page, ENFORCED_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      await expect(lockedFieldLocator(page)).toBeVisible({ timeout: 10_000 });
+      const s = await unitPriceState(page);
+      expect(s.value).toBe(ENFORCED_RATE);
+      expect(s.readOnly).toBe(true);
+      expect(s.hasLockClass).toBe(true);
+      expect(s.helperPresent).toBe(true);
+    });
+    await captureAcSnapshot(testInfo, page, 'after', {
+      focus: lockedFieldLocator(page),
+      label: `Re-selected "${ENFORCED_PRODUCT_NAME}" — lock engaged at $${ENFORCED_RATE} mid-form`,
+    });
+
+    await cancelLineItemForm(page);
+  });
+
+  test('Re-selecting between two enforced products updates the locked rate (no stale value)', async ({ page }, testInfo) => {
+    // Edge1 (re-evaluation): switching from one enforced product to another with a
+    // DIFFERENT approved rate must recompute the locked value, not retain the stale one.
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_5_AC.Edge1, TANGO_5_AC.Calculation2] });
+    test.skip(testInfo.project.name !== 'admin', 'Run once as admin');
+
+    await gotoInvoice(page, 'invoice', SUBCONTRACTOR_INVOICE_ID);
+    await openNewLineItemForm(page);
+    await test.step(`Select "${ENFORCED_PRODUCT_NAME}" → locks at $${ENFORCED_RATE}`, async () => {
+      await selectProduct(page, ENFORCED_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      await expect(lockedFieldLocator(page)).toBeVisible({ timeout: 10_000 });
+      expect((await unitPriceState(page)).value).toBe(ENFORCED_RATE);
+    });
+    await captureAcSnapshot(testInfo, page, 'before', {
+      focus: lockedFieldLocator(page),
+      label: `"${ENFORCED_PRODUCT_NAME}" — locked at $${ENFORCED_RATE}`,
+    });
+
+    await test.step(`Re-select "${SECOND_ENFORCED_PRODUCT_NAME}" (enforced $${SECOND_ENFORCED_RATE}) → locked value must update`, async () => {
+      await selectProduct(page, SECOND_ENFORCED_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      await expect(lockedFieldLocator(page)).toBeVisible({ timeout: 10_000 });
+      const s = await unitPriceState(page);
+      expect(s.value).toBe(SECOND_ENFORCED_RATE);   // updated, not the stale $150
+      expect(s.readOnly).toBe(true);
+      expect(s.hasLockClass).toBe(true);
+      expect(s.helperPresent).toBe(true);
+    });
+    await captureAcSnapshot(testInfo, page, 'after', {
+      focus: lockedFieldLocator(page),
+      label: `Re-selected "${SECOND_ENFORCED_PRODUCT_NAME}" — locked value recomputed to $${SECOND_ENFORCED_RATE} (not stale $${ENFORCED_RATE})`,
+    });
+
+    await cancelLineItemForm(page);
+  });
+
+  test('Enforced pricing ending exactly on the WO completion date still locks (inclusive boundary)', async ({ page }, testInfo) => {
+    // Edge4 boundary: effective_end_date == the WO comparison date must still match
+    // (inclusive), so the rate locks on the last valid day — not only for far-past dates.
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_5_AC.Edge4, TANGO_5_AC.RateLocking1] });
+    test.skip(testInfo.project.name !== 'admin', 'Run once as admin');
+
+    await gotoInvoice(page, 'invoice', SUBCONTRACTOR_INVOICE_ID);
+    await openNewLineItemForm(page);
+    await captureAcSnapshot(testInfo, page, 'before', {
+      focus: unitPriceLocator(page),
+      label: 'New line item form opened — Rate editable, no enforcement yet',
+    });
+
+    await test.step(`Set Product = "${BOUNDARY_PRODUCT_NAME}" (enforced, effective_end_date == WO date 2026-04-28) → must lock (inclusive)`, async () => {
+      await selectProduct(page, BOUNDARY_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      await expect(lockedFieldLocator(page)).toBeVisible({ timeout: 10_000 });
+      const s = await unitPriceState(page);
+      expect(s.value).toBe(BOUNDARY_RATE);
+      expect(s.readOnly).toBe(true);
+      expect(s.hasLockClass).toBe(true);
+    });
+    await captureAcSnapshot(testInfo, page, 'after', {
+      focus: lockedFieldLocator(page),
+      label: `"${BOUNDARY_PRODUCT_NAME}" — locked at $${BOUNDARY_RATE} on the inclusive boundary (end date == WO completion date)`,
     });
 
     await cancelLineItemForm(page);

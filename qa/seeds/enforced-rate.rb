@@ -80,8 +80,19 @@ puts "Set QA password for #{VENDOR_EMAIL} (qa/.env VENDOR_PASSWORD=#{QA_VENDOR_P
 
 holiday_product   = Products::Product.find_by( name: HOLIDAY_PRODUCT_NAME )
 labor_inc_product = Products::Product.find_by( name: LABOR_INC_PRODUCT_NAME )
+# Edge-gap fixtures (added to close the multi-agent review's transition + boundary gaps):
+regular_product   = Products::Product.find_by( name: 'Regular Rate' )  # 2nd enforced rate
+regency_product   = Products::Product.find_by( name: 'Regency' )       # inclusive-boundary fixture
 abort "Aborting: Products::Product '#{HOLIDAY_PRODUCT_NAME}' missing."   unless holiday_product
 abort "Aborting: Products::Product '#{LABOR_INC_PRODUCT_NAME}' missing." unless labor_inc_product
+abort "Aborting: Products::Product 'Regular Rate' missing." unless regular_product
+abort "Aborting: Products::Product 'Regency' missing."      unless regency_product
+
+# Inclusive-boundary date = invoice #24's WO completion date (falls back to created_at).
+# get_pricing must treat effective_end_date == this date as still-in-window (inclusive).
+boundary_invoice = Invoices::SubcontractorInvoice.find_by( id: 24 )
+boundary_wo      = boundary_invoice&.workorders&.first || boundary_invoice&.workorder_assignments&.first&.workorder
+boundary_date    = ( boundary_wo&.date_completed || boundary_wo&.created_at )&.to_date || Date.current
 
 vendor_role = Roles::EntityRole::SubcontractorRole.find_by(
   entity_id: vendor_user.organization_id, active: true,
@@ -125,6 +136,26 @@ baselines = [
     effective_start_date:       Date.new( 2020, 1, 1 ),
     effective_end_date:         Date.new( 2020, 12, 31 ),
     purpose:                    "Expired locked-rate fixture (dates 2020-01-01..2020-12-31). Proves get_pricing's date filter excludes this pricing so the rate remains editable on a WO with a current completion date — AC #13.",
+  },
+  {
+    name:                       "#{FIXTURE_PREFIX}Locked Regular Rate $90",
+    product_id:                 regular_product.id,
+    product_classification_id:  regular_product.product_classification_id,
+    base_price:                 90,
+    prevent_price_modification: true,
+    effective_start_date:       today.beginning_of_year,
+    effective_end_date:         today.next_year.end_of_year,
+    purpose:                    'Second locked fixture at a DIFFERENT rate ($90). Drives the enforced->enforced re-select edge: switching from Holiday Rate ($150) to this product must recompute the locked value to $90, not keep the stale $150.',
+  },
+  {
+    name:                       "#{FIXTURE_PREFIX}Locked Regency Boundary",
+    product_id:                 regency_product.id,
+    product_classification_id:  regency_product.product_classification_id,
+    base_price:                 110,
+    prevent_price_modification: true,
+    effective_start_date:       boundary_date - 90,
+    effective_end_date:         boundary_date,
+    purpose:                    "Inclusive-boundary fixture: effective_end_date == invoice #24 WO date (#{boundary_date}). Proves get_pricing's date filter is INCLUSIVE — the pricing still matches and the rate locks on the last valid day, not only for far-past dates.",
   },
 ]
 
