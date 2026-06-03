@@ -209,7 +209,7 @@ function adfHeadingNode(level, text) {
 // formatCommentADF
 // ---------------------------------------------------------------------------
 
-export function formatCommentADF({ ticketKey, testResults, tester, environment, reportFilename }) {
+export function formatCommentADF({ ticketKey, testResults, tester, environment, reportFilename, reportUrl }) {
   const date = new Date().toISOString().split('T')[0];
   const passed  = testResults.filter(t => t.status === 'pass').length;
   const failed  = testResults.filter(t => t.status === 'fail').length;
@@ -251,7 +251,12 @@ export function formatCommentADF({ ticketKey, testResults, tester, environment, 
         attrs: {},
         content: [adfTextNode(testLines.join('\n'))],
       },
-      adfParagraph([adfTextNode('Full report attached: ', true), adfTextNode(reportFilename)]),
+      adfParagraph([
+        adfTextNode('Full report attached: ', true),
+        reportUrl
+          ? { type: 'text', text: reportFilename, marks: [{ type: 'link', attrs: { href: reportUrl } }] }
+          : adfTextNode(reportFilename),
+      ]),
     ],
   };
 }
@@ -340,7 +345,13 @@ export async function postQAComment(ticketKey, testResults, reportPath, opts = {
   const environment = opts.environment || 'Local Dev (WSL)';
   const reportFilename = basename(reportPath);
 
-  const adfBody = formatCommentADF({ ticketKey, testResults, tester, environment, reportFilename });
+  // Attach the report FIRST so the comment can hyperlink the filename to it.
+  console.log(`[jira] Attaching ${reportFilename} to ${ticketKey}...`);
+  const attachResult = await attachFile(ticketKey, reportPath);
+  const reportUrl = Array.isArray(attachResult) ? attachResult[0]?.content : undefined;
+  console.log(`[jira] Attachment uploaded.`);
+
+  const adfBody = formatCommentADF({ ticketKey, testResults, tester, environment, reportFilename, reportUrl });
 
   console.log(`[jira] Posting QA comment to ${ticketKey}...`);
   const commentResult = await jiraPost(
@@ -349,9 +360,5 @@ export async function postQAComment(ticketKey, testResults, reportPath, opts = {
   );
   console.log(`[jira] Comment posted (id: ${commentResult.id})`);
 
-  console.log(`[jira] Attaching ${reportFilename} to ${ticketKey}...`);
-  await attachFile(ticketKey, reportPath);
-  console.log(`[jira] Attachment uploaded.`);
-
-  return { commentId: commentResult.id, reportFilename };
+  return { commentId: commentResult.id, reportFilename, reportUrl };
 }
