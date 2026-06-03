@@ -1,5 +1,6 @@
 node_modules/
 tmp/
+.cache/
 screenshots/
 reports/
 auth/
@@ -8,3 +9,8 @@ specs/
 *.token
 token
 .env
+
+# QA / Playwright artifacts
+test-results/
+playwright-report/
+exploration/
