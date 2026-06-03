@@ -1,0 +1,27 @@
+node_modules/
+.env
+.env.local
+.env.qa
+.env.*.local
+
+# Auth state files contain session cookies — never commit
+auth/*.json
+
+# Playwright artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# OS noise
+.DS_Store
+/exploration/
+
+# Reports — ignore everything except the per-ticket HTMLs under latest/.
+# Those are tracked so git history doubles as a historical record of
+# QA results over time. Seed manifests and timestamped archives are
+# regenerated per-run and stay ignored.
+/reports/*
+!/reports/latest/
+/reports/latest/*
+!/reports/latest/*.html
