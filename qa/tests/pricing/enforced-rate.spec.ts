@@ -521,6 +521,87 @@ test.describe('Lock rate field when enforcement is ON (TANGO-5)', () => {
     await cancelLineItemForm(page);
   });
 
+  test('Server overrides a tampered unit_price on save — enforcement holds server-side', async ({ page }, testInfo) => {
+    // The client lock is UX only; the model-layer guard
+    // (SubcontractorPricingEnforcement) must force unit_price back to the
+    // Approved Rate on save even when the client lock is bypassed. Proves the
+    // enforcement is real (RateLocking1) and applies regardless of client (Scope2).
+    annotateAc(testInfo, {
+      ticket: TICKET,
+      ac: [TANGO_5_AC.RateLocking1, TANGO_5_AC.Scope2],
+    });
+    test.skip(testInfo.project.name !== 'admin', 'Run once as admin');
+
+    const uniqueDescription = `[QA] TANGO-5 tamper ${Date.now()}`;
+
+    await test.step(`Navigate to SubcontractorInvoice #${SUBCONTRACTOR_INVOICE_ID}`, async () => {
+      await gotoInvoice(page, 'invoice', SUBCONTRACTOR_INVOICE_ID);
+    });
+    await openNewLineItemForm(page);
+    await test.step(`Set Product Class = "Labor", Product = "${ENFORCED_PRODUCT_NAME}" → Rate locks at $${ENFORCED_RATE}`, async () => {
+      await selectProduct(page, ENFORCED_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      await expect(lockedFieldLocator(page)).toBeVisible({ timeout: 10_000 });
+    });
+    await captureAcSnapshot(testInfo, page, 'before', {
+      focus: lockedFieldLocator(page),
+      label: `Rate locked at $${ENFORCED_RATE} before tampering`,
+    });
+
+    await test.step('Bypass the client lock: force the unit_price field editable and set it to $1', async () => {
+      await page.evaluate(() => {
+        const Ext = (window as any).Ext;
+        const form = Ext.ComponentQuery.query('lineitemgrid')[0]?.down?.('formpanel');
+        const f = form?.query?.('[name=unit_price]')[0];
+        f?.setReadOnly?.(false);
+        f?.setDisabled?.(false);
+        f?.setValue?.(1);
+      });
+      await page.waitForTimeout(500);
+    });
+
+    await test.step(`Fill QTY = 1, Description = "${uniqueDescription}", then Save (client submits $1)`, async () => {
+      await page.evaluate((desc) => {
+        const Ext = (window as any).Ext;
+        const form = Ext.ComponentQuery.query('lineitemgrid')[0]?.down?.('formpanel');
+        form?.query?.('[name=quantity]')[0]?.setValue?.(1);
+        form?.query?.('[name=description]')[0]?.setValue?.(desc);
+      }, uniqueDescription);
+      await page.waitForTimeout(400);
+      await page.evaluate(() => {
+        const Ext = (window as any).Ext;
+        Ext.ComponentQuery.query('button[reference=saveLineItemBtn]')[0]?.element?.dom?.click?.();
+      });
+      await page.waitForFunction((desc) => {
+        const Ext = (window as any).Ext;
+        const items = Ext.ComponentQuery.query('lineitemgrid')[0]?.getStore?.()?.getData?.()?.items || [];
+        return items.some((r: any) => r.get?.('description') === desc);
+      }, uniqueDescription, { timeout: 20_000 });
+      await page.waitForTimeout(1500);
+    });
+
+    await test.step(`Verify the SERVER forced the tampered $1 back to the enforced $${ENFORCED_RATE}`, async () => {
+      const row = await page.evaluate((desc) => {
+        const Ext = (window as any).Ext;
+        const items = Ext.ComponentQuery.query('lineitemgrid')[0]?.getStore?.()?.getData?.()?.items || [];
+        const m = items.find((r: any) => r.get?.('description') === desc);
+        return m ? { unit_price: m.get?.('unit_price') } : null;
+      }, uniqueDescription);
+      expect(row, 'tampered line item should have persisted').not.toBeNull();
+      expect(parseFloat(row!.unit_price as unknown as string)).toBe(ENFORCED_RATE);
+    });
+
+    const gridId = await page.evaluate(() => {
+      const g = (window as any).Ext.ComponentQuery.query('lineitemgrid')[0];
+      return g?.element?.dom?.id || g?.id;
+    });
+    await captureAcSnapshot(testInfo, page, 'after', {
+      focus: page.locator(`#${gridId}`),
+      label: `Saved row persisted at $${ENFORCED_RATE} — server rejected the tampered $1 and enforced the approved rate`,
+    });
+
+    await cancelLineItemForm(page);
+  });
+
   test('Clearing + re-selecting product re-evaluates enforcement', async ({ page }, testInfo) => {
     // AC #10 — re-select recomputes enforcement against the new pricing.
     annotateAc(testInfo, {
@@ -732,41 +813,46 @@ test.describe('Lock rate field when enforcement is ON (TANGO-5)', () => {
     await cancelLineItemForm(page);
   });
 
-  test('Vendor can navigate to and view their own SubcontractorInvoice', async ({ page }, testInfo) => {
-    // Smoke test — proves vendor-side access works. AC #9 enforcement
-    // (admin/internal user also restricted) is covered by the admin scenarios
-    // above; this test exists so the report shows the vendor persona too.
+  test('Vendor is also restricted: enforced rate locks on the vendor’s own invoice', async ({ page }, testInfo) => {
+    // AC #9 / Scope #2 — enforcement applies to the VENDOR persona too, not just
+    // admin/internal. The vendor opens their own invoice, selects the enforced
+    // product, and the rate auto-fills + locks exactly as it does for admin.
     annotateAc(testInfo, {
       ticket: TICKET,
-      ac: [TANGO_5_AC.Scope2],
+      ac: [TANGO_5_AC.Scope2, TANGO_5_AC.RateLocking1, TANGO_5_AC.RateLocking3],
     });
-    test.skip(testInfo.project.name !== 'vendor', 'Vendor smoke test');
+    test.skip(testInfo.project.name !== 'vendor', 'Vendor persona');
 
     await test.step(`Navigate to SubcontractorInvoice #${SUBCONTRACTOR_INVOICE_ID} as the vendor`, async () => {
       await gotoInvoice(page, 'invoice', SUBCONTRACTOR_INVOICE_ID);
     });
+    await openNewLineItemForm(page);
+    await captureAcSnapshot(testInfo, page, 'before', {
+      focus: unitPriceLocator(page),
+      label: 'Vendor view — new line item form opened, Rate field editable, no product selected yet',
+    });
 
-    await test.step('Verify the invoice page loaded and the line item grid is present', async () => {
-      const visible = await page.evaluate(() => {
-        const Ext = (window as any).Ext;
-        const grids = Ext.ComponentQuery.query('lineitemgrid').filter((g: any) => g.isVisible?.()).length;
-        return { lineItemGridVisible: grids > 0, hash: location.hash };
-      });
-      expect(visible.lineItemGridVisible).toBe(true);
-      expect(visible.hash).toContain('invoice/');
+    await test.step(`Vendor sets Product Class = "Labor", Product = "${ENFORCED_PRODUCT_NAME}"`, async () => {
+      await selectProduct(page, ENFORCED_PRODUCT_ID, LABOR_CLASSIFICATION_ID);
+      await expect(lockedFieldLocator(page)).toBeVisible({ timeout: 10_000 });
     });
-    // Focus on the line item grid element so the after-shot proves the vendor
-    // reached their own invoice. Form-fill mechanics differ on the vendor side
-    // in the dev env and are covered by the admin scenarios above.
-    const lineItemGridId = await page.evaluate(() => {
-      const Ext = (window as any).Ext;
-      const grid = Ext.ComponentQuery.query('lineitemgrid')[0];
-      return grid?.element?.dom?.id || grid?.id;
+    await test.step(`Verify the vendor is ALSO restricted: Rate locked at $${ENFORCED_RATE} with helper text`, async () => {
+      const state = await unitPriceState(page);
+      expect(state.value).toBe(ENFORCED_RATE);
+      expect(state.readOnly).toBe(true);
+      expect(state.hasLockClass).toBe(true);
+      expect(state.helperPresent).toBe(true);
+      expect(state.helperText).toBe('This rate is enforced. Contact your client to request a change.');
     });
-    const lineItemGrid = page.locator(`#${lineItemGridId}`);
     await captureAcSnapshot(testInfo, page, 'after', {
-      focus: lineItemGrid,
-      label: `Vendor reached SubcontractorInvoice #${SUBCONTRACTOR_INVOICE_ID} — line item grid visible`,
+      focus: lockedFieldLocator(page),
+      label: `Vendor view — Rate locked at $${ENFORCED_RATE} (enforcement restricts the vendor too, not just admin)`,
     });
+    await captureAcSnapshot(testInfo, page, 'after', {
+      focus: helperLocator(page),
+      label: 'Vendor view — helper text rendered below the locked field, identical to the admin experience',
+    });
+
+    await cancelLineItemForm(page);
   });
 });

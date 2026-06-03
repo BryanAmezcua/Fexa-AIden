@@ -65,6 +65,17 @@ else
   puts "#{VENDOR_EMAIL} already has person_id=#{vendor_user.person_id}"
 end
 
+# --- Step 1b: ensure the vendor user has a known QA password -----------------
+# subcontractor_user3083 ships without a known password, but the `vendor`
+# Playwright project logs in as this user to prove Scope #2 (enforcement applies
+# to the vendor persona too). Reset it idempotently to a fixed QA value and
+# surface it so it can be dropped into qa/.env (VENDOR_PASSWORD).
+QA_VENDOR_PASSWORD = 'qa-tango-5-pass1'.freeze
+vendor_user.password              = QA_VENDOR_PASSWORD
+vendor_user.password_confirmation = QA_VENDOR_PASSWORD
+vendor_user.save!
+puts "Set QA password for #{VENDOR_EMAIL} (qa/.env VENDOR_PASSWORD=#{QA_VENDOR_PASSWORD})"
+
 # --- Step 2: look up products + vendor role ---------------------------------
 
 holiday_product   = Products::Product.find_by( name: HOLIDAY_PRODUCT_NAME )
