@@ -286,13 +286,17 @@ begin
     invoice_id: draft_invoice.id, product_id: enforced_product.id, quantity: 1, unit_price: approved_rate,
   )
   li.pricing_id = out_of_window_pricing.id
-  li.save!
-  model_checks << { ac: '4', name: 'Out-of-window pricing_id rejected', passed: false,
-                    detail: 'expected EnforcedPricingViolation(pricing_out_of_window); save succeeded' }
-  li.destroy
-rescue SubcontractorPricingEnforcement::EnforcedPricingViolation => e
-  model_checks << { ac: '4', name: 'Out-of-window pricing_id rejected', passed: ( e.code == 'pricing_out_of_window' ),
-                    detail: "raised #{e.code}: #{e.message}" }
+  # The shipped guard rejects via a validation error on :pricing_id (no exception),
+  # so .save returns false and the message lands in errors[:pricing_id].
+  if li.save
+    li.destroy
+    model_checks << { ac: '4', name: 'Out-of-window pricing_id rejected', passed: false,
+                      detail: 'expected a :pricing_id validation error; save succeeded' }
+  else
+    pid_errors = li.errors[:pricing_id]
+    model_checks << { ac: '4', name: 'Out-of-window pricing_id rejected', passed: pid_errors.present?,
+                      detail: "rejected on pricing_id: #{pid_errors.join('; ').presence || li.errors.full_messages.join('; ')}" }
+  end
 rescue => e
   model_checks << { ac: '4', name: 'Out-of-window pricing_id rejected', passed: false, detail: "unexpected #{e.class}: #{e.message}" }
 end
@@ -303,13 +307,13 @@ begin
   li = Invoices::SubcontractorInvoiceLineItem.new(
     invoice_id: approved_invoice.id, product_id: enforced_product.id, quantity: 1, unit_price: approved_rate.to_f + 5000,
   )
-  li.save!
-  model_checks << { ac: '10', name: 'Approved invoice not re-evaluated', passed: true,
-                    detail: 'mismatched unit_price accepted on approved invoice (guard short-circuited)' }
-  li.destroy
-rescue SubcontractorPricingEnforcement::EnforcedPricingViolation => e
-  model_checks << { ac: '10', name: 'Approved invoice not re-evaluated', passed: false,
-                    detail: "guard fired on approved invoice (#{e.code}) — should have skipped" }
+  # The guard short-circuits on approved invoices (enforcement_reevaluatable? == false),
+  # so it must NOT add a :unit_price enforcement error even though the price mismatches.
+  saved = li.save
+  enforcement_blocked = li.errors[:unit_price].present?
+  model_checks << { ac: '10', name: 'Approved invoice not re-evaluated', passed: !enforcement_blocked,
+                    detail: enforcement_blocked ? "guard fired on approved invoice: #{li.errors[:unit_price].join('; ')} — should have skipped" : "mismatched unit_price not rejected by enforcement on approved invoice (saved=#{saved})" }
+  li.destroy if li.persisted?
 rescue => e
   model_checks << { ac: '10', name: 'Approved invoice not re-evaluated', passed: false, detail: "unexpected #{e.class}: #{e.message}" }
 end
@@ -318,23 +322,24 @@ end
 # With enforcement ON a mismatch is rejected; after toggling it OFF the same
 # mismatch is accepted. Restore the flag afterwards.
 begin
-  on_rejected = false
-  begin
-    Invoices::SubcontractorInvoiceLineItem.create!(
-      invoice_id: draft_invoice.id, product_id: enforced_product.id, quantity: 1, unit_price: 1,
-      description: "#{FIXTURE_PREFIX}AC12 probe ON",
-    )
-  rescue SubcontractorPricingEnforcement::EnforcedPricingViolation
-    on_rejected = true
-  end
+  # Enforcement ON: a mismatched write is rejected via a :unit_price validation error.
+  on_li = Invoices::SubcontractorInvoiceLineItem.new(
+    invoice_id: draft_invoice.id, product_id: enforced_product.id, quantity: 1, unit_price: 1,
+    description: "#{FIXTURE_PREFIX}AC12 probe ON",
+  )
+  on_li.save
+  on_rejected = on_li.errors[:unit_price].present?
+  on_li.destroy if on_li.persisted?
 
+  # Toggle enforcement OFF: the same mismatched write is now accepted (write-time state).
   enforced_pricing.update_columns( prevent_price_modification: false )
-  off_li = Invoices::SubcontractorInvoiceLineItem.create!(
+  off_li = Invoices::SubcontractorInvoiceLineItem.new(
     invoice_id: draft_invoice.id, product_id: enforced_product.id, quantity: 1, unit_price: 1,
     description: "#{FIXTURE_PREFIX}AC12 probe OFF",
   )
-  off_accepted = off_li.persisted?
-  off_li.destroy
+  off_li.save
+  off_accepted = off_li.errors[:unit_price].blank?
+  off_li.destroy if off_li.persisted?
   enforced_pricing.update_columns( prevent_price_modification: true )
 
   model_checks << { ac: '12', name: 'Guard uses write-time pricing state', passed: ( on_rejected && off_accepted ),

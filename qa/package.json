@@ -20,6 +20,7 @@
     "seed:vendor-nte-mass-update": "cd ${FEXY_ZAMO_PATH:-../Fexy-Zamo} && DISABLE_SPRING=1 bundle exec rails runner \"$OLDPWD/seeds/vendor-nte-mass-update.rb\"",
     "seed:pricing-enforcement-reporting": "cd ${FEXY_ZAMO_PATH:-../Fexy-Zamo} && DISABLE_SPRING=1 bundle exec rails runner \"$OLDPWD/seeds/pricing-enforcement-reporting.rb\"",
     "seed:pricing-enforcement-api": "cd ${FEXY_ZAMO_PATH:-../Fexy-Zamo} && DISABLE_SPRING=1 bundle exec rails runner \"$OLDPWD/seeds/pricing-enforcement-api.rb\"",
+    "seed:nte-permission-inheritance": "cd ${FEXY_ZAMO_PATH:-../Fexy-Zamo} && DISABLE_SPRING=1 bundle exec rails runner \"$OLDPWD/seeds/nte-permission-inheritance.rb\"",
     "seed:all": "npm run seed:expired-pricing-indicator && npm run seed:pricing-overlap && npm run seed:approved-rate-reference && npm run seed:enforcement-toggle && npm run seed:enforced-rate && npm run seed:vendor-nte-mass-update && npm run seed:pricing-enforcement-reporting && npm run seed:pricing-enforcement-api",
     "fexa:fast-mode": "bash bin/fexa-fast-mode.sh",
     "fexa:dev-mode": "bash bin/fexa-dev-mode.sh",

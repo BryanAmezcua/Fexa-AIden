@@ -41,7 +41,13 @@ const LINK_QUOTE_LI   = 'subcontractor_quote_line_items';
 // dataIndex (value.toLowerCase().replace(/\W/g,'_').slice(0,63)).
 const PRICING = {
   name:       { value: 'subcontractor_product_pricing.name',                       di: 'subcontractor_product_pricing_name' },
-  restricted: { value: 'subcontractor_product_pricing.prevent_price_modification', di: 'subcontractor_product_pricing_prevent_price_modification', label: 'Subcontractor Product Pricing Pricing Restricted' },
+  // label = the canonical rendered header. PR #6999 (lebibin, merged to develop)
+  // intentionally renders the prevent_price_modification column as "Subcontractor
+  // Product Pricing Modification Restricted" — it describes what is restricted
+  // (price modification) and avoids the "Pricing Pricing" duplication against
+  // COLUMN_PREFIX. Jira AC#1 still reads "Pricing Restricted" (stale text, never
+  // updated to match the PR — a doc gap, not a defect).
+  restricted: { value: 'subcontractor_product_pricing.prevent_price_modification', di: 'subcontractor_product_pricing_prevent_price_modification', label: 'Subcontractor Product Pricing Modification Restricted' },
   esd:        { value: 'subcontractor_product_pricing.effective_start_date',        di: 'subcontractor_product_pricing_effective_start_date',       label: 'Subcontractor Product Pricing Effective Start Date' },
   eed:        { value: 'subcontractor_product_pricing.effective_end_date',          di: 'subcontractor_product_pricing_effective_end_date',         label: 'Subcontractor Product Pricing Effective End Date' },
 };
@@ -306,7 +312,12 @@ test.describe('Pricing-enforcement fields in reporting (TANGO-10)', () => {
 
     await test.step('Verify the new columns appear with their labels and the seeded values render', async () => {
       const { headers, rows } = await readGrid(page);
-      expectColumns(headers, ['Pricing Restricted', 'Effective Start Date', 'Effective End Date']);
+      // The Restricted column's presence/value is proven below via its dataIndex;
+      // its AC#1 label is asserted exactly in the dedicated label test that
+      // follows. Do NOT suffix-match 'Pricing Restricted' here: the data-source
+      // prefix ends in the word "Pricing", so endsWith('Pricing Restricted')
+      // passes even when the field label is the (wrong) "Restricted".
+      expectColumns(headers, ['Effective Start Date', 'Effective End Date']);
       const restricted = rows.find((r) => r[PRICING.name.di] === '[QA] Enforcement Reporting - Restricted');
       const unrestricted = rows.find((r) => r[PRICING.name.di] === '[QA] Enforcement Reporting - Unrestricted');
       expect(restricted, 'Restricted fixture row present in report').toBeTruthy();
@@ -317,6 +328,29 @@ test.describe('Pricing-enforcement fields in reporting (TANGO-10)', () => {
       expect(asBool(unrestricted[PRICING.restricted.di])).toBe(false);
     });
     await snapshotGrid(testInfo, page, 'after');
+  });
+
+  // AC#1 label — RESOLVED (was the sent-back item). Jira AC#1 says the
+  // prevent_price_modification column should read "Pricing Restricted", but
+  // PR #6999 (lebibin, merged to develop) deliberately ships "Modification
+  // Restricted" instead: it describes what is restricted (price modification)
+  // and avoids the awkward "Subcontractor Product Pricing Pricing Restricted"
+  // duplication against COLUMN_PREFIX. The PR updated its own test assertion to
+  // match. This test verifies the canonical shipped label; the Jira AC#1 text is
+  // stale and should be updated to "Modification Restricted" (doc gap only — the
+  // implementation is correct and intentional).
+  test('prevent_price_modification column uses the canonical "Modification Restricted" label (PR #6999; supersedes stale AC#1 "Pricing Restricted")', async ({ page }, testInfo) => {
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_10_AC.Pricing1, TANGO_10_AC.Scope12] });
+
+    await gotoBuilder(page);
+    await selectDataSource(page, SRC_PRICING);
+    await selectColumns(page, [PRICING.name.value, PRICING.restricted.value]);
+    await runReport(page, { minRows: 1 });
+
+    const { headers } = await readGrid(page);
+    const restrictedHeader = headers.find((h) => /\bRestricted$/.test(h)) || '';
+    await test.step(`Report column header renders "${restrictedHeader}" — the canonical "Modification Restricted" label per PR #6999 (Jira AC#1's "Pricing Restricted" is stale text, never updated to match the merged PR)`, async () => { /* evidence-surfacing step */ });
+    expect(restrictedHeader, 'AC#1 (per PR #6999): column header reads "...Modification Restricted"').toBe(PRICING.restricted.label);
   });
 
   test('Pricing Restricted column is filterable on the Subcontractor Product Pricing report', async ({ page }, testInfo) => {
@@ -441,6 +475,33 @@ test.describe('Pricing-enforcement fields in reporting (TANGO-10)', () => {
       expect(overcharge, 'quote overcharge fixture (+60) present').toBeTruthy();
       expect(asNum(overcharge[QUOTE_LI.approvedRate.di])).toBe(150);
       expect(undercharge, 'quote undercharge fixture (-20) present').toBeTruthy();
+    });
+    await snapshotGrid(testInfo, page, 'after');
+  });
+
+  // Scope#11 mandates filter AND sort on BOTH line-item sources. The invoice
+  // source has a sort test above; this is the matching Quote-source sort
+  // (added per the §10 coverage critique — quote sort was previously unverified).
+  test('Rate Deviation Amount is sortable on the Subcontractor Quote Line Item report', async ({ page }, testInfo) => {
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_10_AC.LineItem7, TANGO_10_AC.Scope11] });
+
+    await gotoBuilder(page);
+    await selectDataSource(page, SRC_QUOTE);
+    await addLinkedSource(page, LINK_QUOTE_LI, QUOTE_LI.approvedRate.value);
+    await selectColumns(page, [QUOTE_LI.approvedRate.value, QUOTE_LI.rateDeviation.value, QUOTE_LI.deviationAmt.value, QUOTE_LI.pricingMatched.value]);
+    await addBooleanFilter(page, QUOTE_LI.rateDeviation.value, true);
+    await runReport(page, { minRows: 2 });
+    await snapshotGrid(testInfo, page, 'before');
+
+    await test.step('Sort ascending by Rate Deviation Amount', async () => { await sortResultsBy(page, QUOTE_LI.deviationAmt.di, 'ASC'); });
+
+    await test.step('Returned Quote Rate Deviation Amounts are in non-decreasing order (negative undercharge -20 before positive overcharge +60)', async () => {
+      const { rows } = await readGrid(page);
+      const amounts = rows.map((r) => asNum(r[QUOTE_LI.deviationAmt.di])).filter((n) => !Number.isNaN(n));
+      expect(amounts.length).toBeGreaterThan(1);
+      const sorted = [...amounts].sort((a, b) => a - b);
+      expect(amounts).toEqual(sorted);
+      expect(amounts[0]).toBeLessThan(0);
     });
     await snapshotGrid(testInfo, page, 'after');
   });
