@@ -713,6 +713,59 @@ export const TANGO_49_AC = {
 } as const satisfies Record<string, AcClause>;
 
 /**
+ * Verbatim AC clauses for TANGO-58 (Bug — SubcontractorInvoiceLineItem creates
+ * fire SubcontractorProductPricing.get_pricing twice per save). Captured
+ * directly from the ticket at the time tests were written.
+ *
+ * This is a backend performance + correctness bug. On create of an
+ * Invoices::SubcontractorInvoiceLineItem, two before_validation callbacks each
+ * resolved get_pricing (the PermutationRankable CTE). Kevin's fix (PR #7017,
+ * merged into develop 2026-06-17) routes set_unit_price through the
+ * SubcontractorPricingEnforcement memo (matched_subcontractor_pricing) and
+ * replaces the dirty-tracking cache-reset guard with a product-staleness check,
+ * collapsing the pre-fix 3× (no enforcing match) / 2× (enforcing match) per
+ * create down to 1×. It also repairs a latent correctness divergence: the
+ * inline hash set_unit_price used to build had no assignment->workorder
+ * fallback (comparison_date: nil), so an expired/mis-scoped pricing could fill
+ * the rate — AC #5.
+ *
+ * AC are query-count / model-behavior assertions, so most are verified at the
+ * MODEL layer via seed instrumentation (a real create! with an
+ * sql.active_record subscription counting the `WITH any_matches ... from
+ * product_pricings` CTE), recorded in the manifest's model_checks block. AC #3
+ * (enforcement still locks) is additionally proven through the Ext JS grid; AC
+ * #4 (existing tests pass) runs the merged Minitest surface.
+ *
+ * Markdown checkbox markers ("[ ]") and backticks from the ticket source are
+ * dropped to match the plain-text convention of the other AC constants;
+ * wording and code identifiers are otherwise preserved verbatim.
+ *
+ * Source: https://facilitiesexchange.atlassian.net/browse/TANGO-58
+ */
+export const TANGO_58_AC = {
+  AtMostOnce: {
+    ref: 'Acceptance criteria #1',
+    text: 'Creating a SubcontractorInvoiceLineItem fires SubcontractorProductPricing.get_pricing at most once (verifiable via SQL log or method-call instrumentation)',
+  },
+  UnitPricePopulated: {
+    ref: 'Acceptance criteria #2',
+    text: "unit_price is still populated correctly for new line items where the client didn't supply one",
+  },
+  EnforcementLocks: {
+    ref: 'Acceptance criteria #3',
+    text: 'Pricing enforcement still locks the unit price when matched pricing has prevent_price_modification = true',
+  },
+  ExistingTestsPass: {
+    ref: 'Acceptance criteria #4',
+    text: 'Existing tests for set_unit_price and enforce_locked_unit_price still pass',
+  },
+  DivergenceResolved: {
+    ref: 'Acceptance criteria #5',
+    text: 'Any divergence in option hashes between the two callbacks is documented or resolved',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
  * Attach ticket + AC metadata to the running test. The reporter parses
  * these annotations to group tests by ticket and render the verbatim AC.
  *
