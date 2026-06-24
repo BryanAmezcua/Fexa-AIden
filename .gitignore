@@ -15,5 +15,6 @@ test-results/
 playwright-report/
 exploration/
 
-# Unrelated third-party project clone that lives in this tree (has its own git remote)
-ECC/
+# Local scratch — one-off ticket diagnostics, not part of the skill
+qa/support/
+
