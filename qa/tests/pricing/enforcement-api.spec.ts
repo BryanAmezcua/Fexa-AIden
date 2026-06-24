@@ -11,8 +11,15 @@ import { annotateAc, captureAcSnapshot, TANGO_49_AC } from '../../src/support/qa
  * (app/models/concerns/subcontractor_pricing_enforcement.rb) rejects an API
  * write to a Subcontractor [Invoice|Quote] Line Item unit_price when the
  * matched pricing has prevent_price_modification = true and the submitted
- * price != Products::ProductPricing.evaluate_data output. The EV1 customer
- * API (api/ev1) maps EnforcedPricingViolation -> structured 422.
+ * price != Products::ProductPricing.evaluate_data output.
+ *
+ * Shipped contract (verified against the running app, NOT a structured 422):
+ * the guard rejects via a standard Rails validation error, surfaced by the EV1
+ * responder as HTTP 201 (single line item) / 200 (nested parent) with body
+ * { line_items|invoices: { ...attrs, id: null when rejected }, errors, success }.
+ * A rejected write => success:false + an errors entry on the offending field
+ * (e.g. errors.unit_price). There is NO error `code`, NO discrete `approved_rate`
+ * field, and NO 4xx status — see the AC#7 deviation note in the QA report.
  *
  * There is no Ext JS screen to drive, so these tests exercise the EV1
  * endpoints directly with Doorkeeper bearer tokens (minted by the seed) and
@@ -157,38 +164,37 @@ async function apiSend(
   return { status, body };
 }
 
-/** Best-effort error payload extractor for assertions on the 422 shape. */
-function errorPayload(body: unknown): Record<string, any> | null {
-  if (body && typeof body === 'object' && 'error' in (body as any)) {
-    return (body as any).error;
-  }
-  return null;
+// --- Shipped EV1 contract (observed) ---------------------------------------
+// There is NO raised EnforcedPricingViolation and NO structured 422 { code,
+// field, approved_rate } payload. The model guard rejects via standard Rails
+// validation errors, surfaced by the EV1 responder as:
+//   HTTP 201 (single line item) / 200 (nested parent), body:
+//   { line_items|invoices: { ...attrs, id: null on reject }, errors: {...}, success: bool }
+// A rejected write is signalled by success:false + an errors entry on the
+// offending field (id stays null = nothing persisted). On the nested parent
+// endpoint the error key is association-prefixed
+// ("subcontractor_invoice_line_items.unit_price").
+
+/** True when the write was rejected (not persisted). */
+function isRejected(body: unknown): boolean {
+  return (body as any)?.success === false;
 }
 
-function cleanupApiLineItems(): void {
-  for (const table of ['line_items']) {
-    try {
-      execSync(
-        `psql -U postgres -d fmdev -c "DELETE FROM ${table} WHERE description LIKE '${QA_DESC_PREFIX}%'"`,
-        { stdio: 'pipe' },
-      );
-    } catch (err) {
-      console.warn('[cleanup] failed:', (err as Error).message);
-    }
-  }
+/** Validation messages for a field, tolerant of the association-prefixed key on nested writes. */
+function fieldErrors(body: unknown, field: string): string[] {
+  const errs = (body as any)?.errors;
+  if (!errs || typeof errs !== 'object') return [];
+  const key = Object.keys(errs).find((k) => k === field || k.endsWith(`.${field}`));
+  return key ? (errs[key] as string[]) : [];
 }
 
-/** Count audit rows on a line item whose comment mentions an override. */
-function overrideAuditCount(lineItemId: number): number {
-  try {
-    const out = execSync(
-      `psql -U postgres -d fmdev -tA -c "SELECT COUNT(*) FROM audits WHERE auditable_type = 'Invoices::SubcontractorInvoiceLineItem' AND auditable_id = ${lineItemId} AND comment ILIKE '%override%'"`,
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    ).toString().trim();
-    return parseInt(out, 10) || 0;
-  } catch {
-    return -1;
-  }
+// DB reads/cleanup go through `rails runner` (reliable in this WSL env, where
+// psql peer-auth on the unix socket is unavailable). Mirrors the TANGO-10
+// backfill helper. Ruby strings are double-quoted so the whole snippet can be
+// wrapped in bash single quotes.
+function railsEval(ruby: string): string {
+  const cmd = `cd "${process.env.FEXY_ZAMO_PATH || '../Fexy-Zamo'}" && DISABLE_SPRING=1 bundle exec rails runner '${ruby}'`;
+  return execSync(cmd, { cwd: process.cwd(), shell: '/bin/bash', encoding: 'utf8', timeout: 120_000 });
 }
 
 function lineItemId(body: unknown): number | null {
@@ -196,6 +202,39 @@ function lineItemId(body: unknown): number | null {
   if (!li) return null;
   const rec = Array.isArray(li) ? li[0] : li;
   return rec?.id ?? null;
+}
+
+/** Count line_items rows matching a description — proves a rejected write created NO row. */
+function lineItemCountByDesc(descLike: string): number {
+  try {
+    const out = railsEval(`puts "CNT="+Invoices::LineItem.where("description LIKE ?","${descLike}").count.to_s`);
+    const line = out.split('\n').find((l) => l.startsWith('CNT='));
+    return line ? parseInt(line.replace('CNT=', ''), 10) : -1;
+  } catch {
+    return -1;
+  }
+}
+
+/** Read the most-recent override audit (count + comment) for a line item. */
+function overrideAudit(lineItemId: number): { count: number; comment: string } {
+  try {
+    // audited records the STI base class ("Invoices::LineItem"), not the subclass.
+    const ruby = `a=Audited::Audit.where(auditable_type:"Invoices::LineItem",auditable_id:${lineItemId}).where("comment ILIKE ?","%override%");require"json";puts "OVR="+{count:a.count,comment:a.order("created_at DESC").first&.comment.to_s}.to_json`;
+    const out = railsEval(ruby);
+    const line = out.split('\n').find((l) => l.startsWith('OVR='));
+    return line ? JSON.parse(line.replace('OVR=', '')) : { count: -1, comment: '' };
+  } catch {
+    return { count: -1, comment: '' };
+  }
+}
+
+/** Best-effort cleanup of this suite's line items (one Rails boot; runs in afterAll). */
+function cleanupApiLineItems(): void {
+  try {
+    railsEval(`puts "DEL="+Invoices::LineItem.where("description LIKE ?","${QA_DESC_PREFIX}%").destroy_all.size.to_s`);
+  } catch (err) {
+    console.warn('[cleanup] failed:', (err as Error).message);
+  }
 }
 
 // --- Suite -----------------------------------------------------------------
@@ -221,7 +260,7 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
     test.skip(!manifest, `Seed manifest missing at ${MANIFEST_PATH}. Run: npm run seed:pricing-enforcement-api`);
   });
 
-  test.afterEach(() => {
+  test.afterAll(() => {
     cleanupApiLineItems();
   });
 
@@ -249,10 +288,10 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
       result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
     });
 
-    await test.step('Verify the write is accepted (2xx, success=true)', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBeGreaterThanOrEqual(200);
-      expect(result.status).toBeLessThan(300);
-      expect((result.body as any)?.success).toBeTruthy();
+    await test.step('Verify the write is accepted (HTTP 201, success=true, line item persisted)', async () => {
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect((result.body as any)?.success).toBe(true);
+      expect(lineItemId(result.body), 'persisted line item id').toBeTruthy();
     });
 
     await renderExchange(testInfo, page, 'after', {
@@ -261,7 +300,7 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
     });
   });
 
-  test('enforced pricing: a mismatched unit_price is rejected with a structured 422', async ({ page, request }, testInfo) => {
+  test('enforced pricing: a mismatched unit_price is rejected (success:false + structured unit_price error)', async ({ page, request }, testInfo) => {
     annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_49_AC.EnforcementScope2, TANGO_49_AC.VendorExperience7, TANGO_49_AC.Coverage14] });
     const m = manifest!;
     const url = `${base}/subcontractor_invoice_line_items`;
@@ -286,23 +325,68 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
       result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
     });
 
-    await test.step('Verify 422 with structured payload: code, field=unit_price, approved_rate, human-readable message (AC 7)', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(422);
-      const err = errorPayload(result.body);
-      expect(err, 'expected { error: {...} } payload').toBeTruthy();
-      expect(err!.code).toBe('enforced_price_mismatch');
-      expect(err!.field).toBe('unit_price');
-      expect(Number(err!.approved_rate)).toBeCloseTo(m.scope.approved_rate, 2);
-      expect(String(err!.message)).toContain('This rate is enforced by your client');
+    await test.step('Verify rejection: success=false, unit_price error embeds both amounts, no row persisted (AC 7)', async () => {
+      // Shipped contract: HTTP 201 + success:false + errors.unit_price (NOT a 422 with a code).
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect(isRejected(result.body), 'rejected write reports success=false').toBe(true);
+      const msgs = fieldErrors(result.body, 'unit_price');
+      expect(msgs.length, 'a unit_price validation error is present').toBeGreaterThan(0);
+      const msg = msgs.join(' ');
+      // AC#7: the message embeds BOTH amounts ("Submitted rate $X does not match approved rate $Y.").
+      expect(msg).toContain('This rate is enforced by your client');
+      expect(msg).toMatch(/does not match approved rate/);
+      expect(msg, 'approved amount rendered in message').toContain(String(Math.trunc(m.scope.approved_rate)));
+      expect(msg, 'submitted amount rendered in message').toContain(String(Math.trunc(submitted)));
+      // The rejected write must have created NO line item.
+      expect(lineItemId(result.body), 'no line item persisted (id null = nothing written)').toBeNull();
     });
 
     await renderExchange(testInfo, page, 'after', {
-      title: 'Mismatched unit_price rejected (422 enforced_price_mismatch)', persona: vendorPersona,
+      title: 'Mismatched unit_price rejected (success:false + unit_price error)', persona: vendorPersona,
       method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
     });
   });
 
-  test('a vendor without override permission gets 422 (value rejected), not 401/403 (auth)', async ({ page, request }, testInfo) => {
+  test('enforced pricing: an undercharge (unit_price BELOW the Approved Rate) is also rejected', async ({ page, request }, testInfo) => {
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_49_AC.EnforcementScope2, TANGO_49_AC.Coverage14] });
+    const m = manifest!;
+    const url = `${base}/subcontractor_invoice_line_items`;
+    const submitted = m.scope.approved_rate - 25; // below approved — guard is equality, so both directions reject
+    const body = {
+      line_items: {
+        invoice_id: m.scope.invoice_targets.draft_invoice_id,
+        product_id: m.scope.enforced_product.id,
+        quantity: 1,
+        unit_price: submitted,
+        description: `${QA_DESC_PREFIX} undercharge-reject`,
+      },
+    };
+
+    await renderExchange(testInfo, page, 'before', {
+      title: `POST undercharge: unit_price $${submitted} is BELOW Approved $${m.scope.approved_rate}`,
+      persona: vendorPersona, method: 'POST', url, requestBody: body,
+      note: 'AC 2 is "does not equal" — the guard rejects undercharges just like overcharges.',
+    });
+
+    let result!: ApiResult;
+    await test.step(`POST ${url} → unit_price=${submitted} (below Approved Rate $${m.scope.approved_rate})`, async () => {
+      result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
+    });
+
+    await test.step('Verify the undercharge is rejected: success=false + unit_price error; no row created', async () => {
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect(isRejected(result.body)).toBe(true);
+      expect(fieldErrors(result.body, 'unit_price').length, 'unit_price validation error').toBeGreaterThan(0);
+      expect(lineItemId(result.body), 'no line item persisted').toBeNull();
+    });
+
+    await renderExchange(testInfo, page, 'after', {
+      title: 'Undercharge rejected (success:false + unit_price error)', persona: vendorPersona,
+      method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
+    });
+  });
+
+  test('a vendor without override permission gets a value rejection (success:false), not 401/403 (auth)', async ({ page, request }, testInfo) => {
     annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_49_AC.Permissions6] });
     const m = manifest!;
     const url = `${base}/subcontractor_invoice_line_items`;
@@ -320,7 +404,7 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
     await renderExchange(testInfo, page, 'before', {
       title: 'Authenticated vendor submits a disallowed rate (no override permission)',
       persona: vendorPersona, method: 'POST', url, requestBody: body,
-      note: 'Auth is valid; only the value is wrong — the contract says 422, never 403/401.',
+      note: 'Auth is valid; only the value is wrong — the write is rejected (success:false), never an auth 401/403.',
     });
 
     let result!: ApiResult;
@@ -328,14 +412,16 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
       result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
     });
 
-    await test.step('Verify status is 422 (value rejection), and explicitly NOT 401/403', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(422);
+    await test.step('Verify the VALUE is rejected (success=false + unit_price error), and it is NOT an auth failure (401/403)', async () => {
       expect(result.status).not.toBe(401);
       expect(result.status).not.toBe(403);
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect(isRejected(result.body), 'value rejected via success=false, not an auth error').toBe(true);
+      expect(fieldErrors(result.body, 'unit_price').length, 'unit_price validation error').toBeGreaterThan(0);
     });
 
     await renderExchange(testInfo, page, 'after', {
-      title: 'Value rejected with 422 (not an auth failure)', persona: vendorPersona,
+      title: 'Value rejected (success:false), not an auth failure', persona: vendorPersona,
       method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
     });
   });
@@ -364,14 +450,94 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
       result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
     });
 
-    await test.step('Verify the write proceeds (2xx, success=true) — no enforced pricing matched', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBeGreaterThanOrEqual(200);
-      expect(result.status).toBeLessThan(300);
-      expect((result.body as any)?.success).toBeTruthy();
+    await test.step('Verify the write proceeds (HTTP 201, success=true, persisted) — no enforced pricing matched', async () => {
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect((result.body as any)?.success).toBe(true);
+      expect(lineItemId(result.body), 'persisted line item id').toBeTruthy();
     });
 
     await renderExchange(testInfo, page, 'after', {
       title: 'Unenforced pricing — arbitrary rate accepted', persona: vendorPersona,
+      method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
+    });
+  });
+
+  // --- Quote source (AC#2 names SubcontractorQuoteLineItem too) ---------------
+  // The EV1 quote controller resolves its parent from params[:line_items][:invoice_id]
+  // (subcontractor_quote_line_items_controller.rb#create), so the quote id is passed
+  // under invoice_id — same body shape as the invoice endpoint.
+
+  test('quote line item: a write whose unit_price equals the Approved Rate is accepted', async ({ page, request }, testInfo) => {
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_49_AC.EnforcementScope2, TANGO_49_AC.Coverage14] });
+    const m = manifest!;
+    const url = `${base}/subcontractor_quote_line_items`;
+    const body = {
+      line_items: {
+        invoice_id: m.scope.invoice_targets.draft_quote_id,
+        product_id: m.scope.enforced_product.id,
+        quantity: 1,
+        unit_price: m.scope.approved_rate,
+        description: `${QA_DESC_PREFIX} quote-match-accept`,
+      },
+    };
+
+    await renderExchange(testInfo, page, 'before', {
+      title: `POST quote line item with matching Approved Rate ($${m.scope.approved_rate})`,
+      persona: vendorPersona, method: 'POST', url, requestBody: body,
+      note: 'Same guard, quote source — AC 2 covers SubcontractorQuoteLineItem as well.',
+    });
+
+    let result!: ApiResult;
+    await test.step(`POST ${url} → quote(invoice_id)=${m.scope.invoice_targets.draft_quote_id}, product_id=${m.scope.enforced_product.id}, unit_price=${m.scope.approved_rate} (== Approved Rate)`, async () => {
+      result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
+    });
+
+    await test.step('Verify the quote write is accepted (HTTP 201, success=true, persisted)', async () => {
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect((result.body as any)?.success).toBe(true);
+      expect(lineItemId(result.body), 'persisted quote line item id').toBeTruthy();
+    });
+
+    await renderExchange(testInfo, page, 'after', {
+      title: 'Quote source: matching Approved Rate accepted', persona: vendorPersona, method: 'POST', url,
+      requestBody: body, status: result.status, responseBody: result.body,
+    });
+  });
+
+  test('quote line item: a mismatched unit_price is rejected (success:false + unit_price error)', async ({ page, request }, testInfo) => {
+    annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_49_AC.EnforcementScope2, TANGO_49_AC.VendorExperience7, TANGO_49_AC.Coverage14] });
+    const m = manifest!;
+    const url = `${base}/subcontractor_quote_line_items`;
+    const submitted = m.scope.approved_rate + 50;
+    const body = {
+      line_items: {
+        invoice_id: m.scope.invoice_targets.draft_quote_id,
+        product_id: m.scope.enforced_product.id,
+        quantity: 1,
+        unit_price: submitted,
+        description: `${QA_DESC_PREFIX} quote-mismatch-reject`,
+      },
+    };
+
+    await renderExchange(testInfo, page, 'before', {
+      title: `POST quote line item with mismatched unit_price ($${submitted} vs Approved $${m.scope.approved_rate})`,
+      persona: vendorPersona, method: 'POST', url, requestBody: body,
+    });
+
+    let result!: ApiResult;
+    await test.step(`POST ${url} → quote line item, unit_price=${submitted} (Approved Rate is $${m.scope.approved_rate})`, async () => {
+      result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
+    });
+
+    await test.step('Verify rejection on the quote source: success=false + unit_price error; no row created', async () => {
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect(isRejected(result.body), 'quote write rejected (success=false)').toBe(true);
+      expect(fieldErrors(result.body, 'unit_price').length, 'unit_price validation error on the quote source').toBeGreaterThan(0);
+      expect(lineItemId(result.body), 'no quote line item persisted').toBeNull();
+    });
+
+    await renderExchange(testInfo, page, 'after', {
+      title: 'Quote source: mismatched unit_price rejected (success:false)', persona: vendorPersona,
       method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
     });
   });
@@ -403,19 +569,22 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
       result = await apiSend(request, 'put', url, m.api_auth.vendor_token, body);
     });
 
-    await test.step('Verify the nested write is rejected with 422 (guard fires on the parent payload too)', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(422);
-      const err = errorPayload(result.body);
-      expect(err?.code).toBe('enforced_price_mismatch');
+    await test.step('Verify the batched/nested write is rejected: HTTP 200, success=false, unit_price error on the nested item; no bypass', async () => {
+      // Parent endpoint returns 200; rejection is success:false with an
+      // association-prefixed error key ("subcontractor_invoice_line_items.unit_price").
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(200);
+      expect(isRejected(result.body), 'parent payload rejected (success=false)').toBe(true);
+      expect(fieldErrors(result.body, 'unit_price').length, 'unit_price error on the nested line item').toBeGreaterThan(0);
+      expect(lineItemCountByDesc(`${QA_DESC_PREFIX} nested-bad`), 'disallowed nested line item not persisted (no bypass)').toBe(0);
     });
 
     await renderExchange(testInfo, page, 'after', {
-      title: 'Batched nested write rejected (422) — no bypass via the parent endpoint', persona: vendorPersona,
+      title: 'Batched nested write rejected (success:false) — no bypass via the parent endpoint', persona: vendorPersona,
       method: 'PUT', url, requestBody: body, status: result.status, responseBody: result.body,
     });
   });
 
-  test('override without permission is rejected with 422 (override_not_permitted)', async ({ page, request }, testInfo) => {
+  test('override requested without permission is refused (same rejection shape as a mismatch; not an auth 403)', async ({ page, request }, testInfo) => {
     annotateAc(testInfo, { ticket: TICKET, ac: [TANGO_49_AC.Permissions6, TANGO_49_AC.OverrideAudit9] });
     const m = manifest!;
     const url = `${base}/subcontractor_invoice_line_items`;
@@ -442,14 +611,16 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
       result = await apiSend(request, 'post', url, m.api_auth.vendor_token, body);
     });
 
-    await test.step('Verify 422 with code enforced_price_override_not_permitted (still not a 403)', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(422);
-      const err = errorPayload(result.body);
-      expect(err?.code).toBe('enforced_price_override_not_permitted');
+    await test.step('Verify the override is refused (success=false + unit_price error), not an auth 403. NOTE: shipped behavior returns the SAME mismatch error as a plain rejection — there is no distinct override-denied code/signal', async () => {
+      expect(result.status).not.toBe(403);
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect(isRejected(result.body), 'unpermitted override refused (success=false)').toBe(true);
+      expect(fieldErrors(result.body, 'unit_price').length, 'refused via the standard unit_price mismatch error').toBeGreaterThan(0);
+      expect(lineItemId(result.body), 'no line item persisted').toBeNull();
     });
 
     await renderExchange(testInfo, page, 'after', {
-      title: 'Override denied for unprivileged vendor (422)', persona: vendorPersona,
+      title: 'Override refused for unprivileged vendor (success:false)', persona: vendorPersona,
       method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
     });
   });
@@ -483,22 +654,27 @@ test.describe('API-layer pricing enforcement (TANGO-49)', () => {
     });
 
     let createdId: number | null = null;
-    await test.step('Verify the override is accepted (2xx) and the submitted price persisted', async () => {
-      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBeGreaterThanOrEqual(200);
-      expect(result.status).toBeLessThan(300);
-      expect((result.body as any)?.success).toBeTruthy();
+    await test.step('Verify the override is accepted (HTTP 201, success=true) and the overridden price persisted', async () => {
+      expect(result.status, `body: ${JSON.stringify(result.body)}`).toBe(201);
+      expect((result.body as any)?.success).toBe(true);
       createdId = lineItemId(result.body);
       expect(createdId, 'expected created line item id in response').toBeTruthy();
+      expect(Number((result.body as any)?.line_items?.unit_price), 'persisted at the overridden price').toBeCloseTo(submitted, 2);
     });
 
-    await test.step('Verify an audit row was written for the override (audits table, comment mentions override)', async () => {
-      expect.poll(() => overrideAuditCount(createdId!), { timeout: 10_000 }).toBeGreaterThan(0);
+    await test.step('Verify the override audit captures the reason + original (approved) vs accepted price (AC 9)', async () => {
+      const audit = overrideAudit(createdId!);
+      expect(audit.count, 'an override audit row was written').toBeGreaterThan(0);
+      // Audit format: "…override by <user>: approved rate $Y, accepted rate $X. Reason: <reason>"
+      expect(audit.comment, 'audit records the required reason string').toContain(reason);
+      expect(audit.comment, 'audit records the accepted (override) price').toContain(String(Math.trunc(submitted)));
+      expect(audit.comment, 'audit records the original approved rate').toContain(String(Math.trunc(m.scope.approved_rate)));
     });
 
     await renderExchange(testInfo, page, 'after', {
       title: 'Authorized override accepted + audited', persona: adminPersona,
       method: 'POST', url, requestBody: body, status: result.status, responseBody: result.body,
-      note: `Audit rows for line item ${createdId} mentioning "override": ${createdId ? overrideAuditCount(createdId) : 'n/a'}`,
+      note: `Override audit rows for line item ${createdId}: ${createdId ? overrideAudit(createdId).count : 'n/a'}`,
     });
   });
 

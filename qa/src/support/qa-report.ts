@@ -494,6 +494,140 @@ export const TANGO_10_AC = {
 } as const satisfies Record<string, AcClause>;
 
 /**
+ * Verbatim AC clauses for TANGO-35 (Bug — decouple Client/Subcontractor
+ * DefaultNotToExceed permission inheritance so granular read works on the
+ * workorder NTE lookup). Permission-layer fix in PR #6985 / commit 7bbe09fa51:
+ * ApplicationController#user_permission now resolves through the STI ancestry
+ * (child -> parent) via permission_resource_candidates, and the NTE controller
+ * actions pass permission_resource: <child class> to respond_with_filtered.
+ *
+ * Verified at the authorization-logic layer (the exact methods the fix changed)
+ * via rails-runner: the real ApplicationController#user_permission + CanCan
+ * Ability, against seeded users granted read on ONLY the child / sibling /
+ * parent class. Source: https://facilitiesexchange.atlassian.net/browse/TANGO-35
+ */
+export const TANGO_35_AC = {
+  Ac1ClientChildSufficient: {
+    ref: 'AC #1',
+    text: 'Client NTE lookups on workorder creation succeed with read on Administration::ClientDefaultNotToExceed only.',
+  },
+  Ac2NoSubLeak: {
+    ref: 'AC #2',
+    text: 'A user with that permission cannot access Administration::SubcontractorDefaultNotToExceed.',
+  },
+  Ac3SubChildSymmetric: {
+    ref: 'AC #3',
+    text: 'Symmetric fix applied on the Subcontractor side: read on Administration::SubcontractorDefaultNotToExceed is sufficient for Vendor NTE lookups (get_first_subcontractor_match).',
+  },
+  Ac4NoParentRegression: {
+    ref: 'AC #4',
+    text: 'No regression for users who currently have read on the parent class.',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
+ * Verbatim AC clauses for TANGO-48 (Forward-looking relative date filter options
+ * for communication rule and report filters). Backend extends
+ * Reporting::Report#relative_time (next_7_days / next_14_days / next_30_days and a
+ * custom_days_forward_<n> token clamped to 1..365); frontend adds the dropdown
+ * options + a "Custom Days Forward" numeric input (maxValue 365 + error) across
+ * the report filter UI and the comm-rule ReportAutomatorDialog. PR #6994.
+ * Source: https://facilitiesexchange.atlassian.net/browse/TANGO-48
+ */
+export const TANGO_48_AC = {
+  Scope: {
+    ref: 'Scope',
+    text: 'Scope: applies to both communication rule filters and report filters.',
+  },
+  Presets: {
+    ref: 'UX — presets',
+    text: 'New forward-looking preset options added to the filter value dropdown for date fields: Next 7 Days, Next 14 Days, Next 30 Days',
+  },
+  CustomOption: {
+    ref: 'UX — custom option',
+    text: 'New option in the dropdown: "Custom Days Forward".',
+  },
+  CustomInput: {
+    ref: 'UX — second input',
+    text: 'When "Custom Days Forward" is selected, a second input field appears where the user enters the number of days in the future.',
+  },
+  Dynamic: {
+    ref: 'UX — dynamic',
+    text: 'Filter evaluates dynamically at rule/report execution time. No hardcoded dates.',
+  },
+  BackwardUnchanged: {
+    ref: 'UX — backward unchanged',
+    text: 'Existing backward-looking options remain unchanged.',
+  },
+  Cap365: {
+    ref: 'UX — cap',
+    text: 'Cap custom field for days forward at 365, does not make sense to go further in future. Only numerical values.',
+  },
+  CapError: {
+    ref: 'UX — cap error',
+    text: 'Error "only supports values up to 365" please update the values in this field and try re-saving',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
+ * Verbatim AC clauses for TANGO-60 (Bug — Support Non Enforced Pricings).
+ * Two defects fixed in commit 71e772c75c: (1) get_unit_price's price_only match
+ * excluded pure Decrease pricings so a non-enforced Decrease never surfaced the
+ * Approved Rate — fixed with a display-only unfiltered fallback for
+ * approved_rate/pricing_type; (2) switching products on an open line-item form
+ * kept the previous product's rate (the "stubborn invoice") — fixed by tracking
+ * lastAutoAppliedRate so the grid clears only its own residue, never user input.
+ * Source: https://facilitiesexchange.atlassian.net/browse/TANGO-60
+ */
+export const TANGO_60_AC = {
+  NonEnforcedTotal: {
+    ref: 'Acceptance — non-enforced total + editable',
+    text: 'When I add pricing for subcontractor pricing for base price that are not enforced, I should see the total on the line item when I select that pricing and it\'s valid for that line item type and be able to edit the values.',
+  },
+  ApprovedRateEditable: {
+    ref: 'Acceptance — approved rate, type over',
+    text: 'I should also see the approved rate, but be able to type over the amount',
+  },
+  IncreaseDecreaseParity: {
+    ref: 'Acceptance — increase/decrease parity',
+    text: 'I should see no difference in behavior for increase or decrease prices - from before our pricing work this quarter started.',
+  },
+  EnforcedLocked: {
+    ref: 'Acceptance — enforced stays locked',
+    text: 'When prices are enforced, they should work as they do now and that I cannot edit the values and I\'m directed to contact someone if I feel like the values are incorrect',
+  },
+  Consistency: {
+    ref: 'Acceptance — consistent application (stubborn invoice)',
+    text: 'I\'ll attach an image in the comments of a invoice that was particularly stubborn where I updated a pricing and it wasn\'t until the third labor line item that it applied the right values to the line item',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
+ * Verbatim AC clauses for TANGO-51 (Bug — GL Code Reappearing After Removal from
+ * Invoice). Fix commit 59189fe1fd restores the gl_code contract: nil means
+ * "derive from the GL mapping"; any non-nil value — including '' from an explicit
+ * clear — is deliberate and must NOT be re-derived. FIRA-6123 had widened the
+ * maybe_set_gl_code guard from nil? to blank?, so clearing the field re-applied
+ * the mapping on save. Fix touches maybe_set_gl_code, SetGlCodesJob, the v1/ev1
+ * subcontractor controllers (key? permission guard) and InvoiceController.js.
+ * Source: https://facilitiesexchange.atlassian.net/browse/TANGO-51
+ */
+export const TANGO_51_AC = {
+  ExpectedRemoval: {
+    ref: 'Expected behavior',
+    text: 'GL Code should be removed after saving and refreshing the browser',
+  },
+  BugRepro: {
+    ref: 'Bug — what was happening',
+    text: 'When removing the GL Code from the field, it reappears after saving the invoice and refreshing the browser. This was not the case before as they were able to remove the GL Code when needed. Somehow the GL Code mapping is persistent.',
+  },
+  StatusGating: {
+    ref: 'Additional info (comment)',
+    text: 'GL Code deletion is possible only when the invoice status types are in Accepted or Billing but not when it’s in New, In Progress, or Needs Review.',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
  * Verbatim AC clauses for TANGO-49 (API-layer enforcement for pricing
  * modification + effective dates). Captured directly from the ticket at the
  * time tests were written.
@@ -575,6 +709,59 @@ export const TANGO_49_AC = {
   Coverage14: {
     ref: 'Coverage #14',
     text: 'Request specs cover: enforced + matching price (accept), enforced + mismatched price (reject), enforced + out-of-window pricing_id (reject), unenforced pricing (accept any price), nested parent write (reject), bundle/import write (reject), already-approved invoice (no re-eval), and override path (accept + audit row written).',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
+ * Verbatim AC clauses for TANGO-58 (Bug — SubcontractorInvoiceLineItem creates
+ * fire SubcontractorProductPricing.get_pricing twice per save). Captured
+ * directly from the ticket at the time tests were written.
+ *
+ * This is a backend performance + correctness bug. On create of an
+ * Invoices::SubcontractorInvoiceLineItem, two before_validation callbacks each
+ * resolved get_pricing (the PermutationRankable CTE). Kevin's fix (PR #7017,
+ * merged into develop 2026-06-17) routes set_unit_price through the
+ * SubcontractorPricingEnforcement memo (matched_subcontractor_pricing) and
+ * replaces the dirty-tracking cache-reset guard with a product-staleness check,
+ * collapsing the pre-fix 3× (no enforcing match) / 2× (enforcing match) per
+ * create down to 1×. It also repairs a latent correctness divergence: the
+ * inline hash set_unit_price used to build had no assignment->workorder
+ * fallback (comparison_date: nil), so an expired/mis-scoped pricing could fill
+ * the rate — AC #5.
+ *
+ * AC are query-count / model-behavior assertions, so most are verified at the
+ * MODEL layer via seed instrumentation (a real create! with an
+ * sql.active_record subscription counting the `WITH any_matches ... from
+ * product_pricings` CTE), recorded in the manifest's model_checks block. AC #3
+ * (enforcement still locks) is additionally proven through the Ext JS grid; AC
+ * #4 (existing tests pass) runs the merged Minitest surface.
+ *
+ * Markdown checkbox markers ("[ ]") and backticks from the ticket source are
+ * dropped to match the plain-text convention of the other AC constants;
+ * wording and code identifiers are otherwise preserved verbatim.
+ *
+ * Source: https://facilitiesexchange.atlassian.net/browse/TANGO-58
+ */
+export const TANGO_58_AC = {
+  AtMostOnce: {
+    ref: 'Acceptance criteria #1',
+    text: 'Creating a SubcontractorInvoiceLineItem fires SubcontractorProductPricing.get_pricing at most once (verifiable via SQL log or method-call instrumentation)',
+  },
+  UnitPricePopulated: {
+    ref: 'Acceptance criteria #2',
+    text: "unit_price is still populated correctly for new line items where the client didn't supply one",
+  },
+  EnforcementLocks: {
+    ref: 'Acceptance criteria #3',
+    text: 'Pricing enforcement still locks the unit price when matched pricing has prevent_price_modification = true',
+  },
+  ExistingTestsPass: {
+    ref: 'Acceptance criteria #4',
+    text: 'Existing tests for set_unit_price and enforce_locked_unit_price still pass',
+  },
+  DivergenceResolved: {
+    ref: 'Acceptance criteria #5',
+    text: 'Any divergence in option hashes between the two callbacks is documented or resolved',
   },
 } as const satisfies Record<string, AcClause>;
 

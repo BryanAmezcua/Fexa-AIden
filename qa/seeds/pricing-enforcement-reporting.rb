@@ -25,7 +25,9 @@ VENDOR_EMAIL     = 'subcontractor_user3083@fexa.io'.freeze
 
 # Stable fixture targets confirmed via DB introspection (see TANGO-10 notes):
 INVOICE_ID       = 26   # SubcontractorInvoice, Draft (non-final), empty
-QUOTE_ID         = 88   # SubcontractorQuote, ATF-Draft (non-final), empty
+QUOTE_ID         = 18   # SubcontractorQuote, non-final (wtype 8); remapped from
+                        # #88 (gone after a develop DB refresh). Has 1 unrelated
+                        # line item, excluded by the Rate Deviation=true filter.
 FINAL_INVOICE_ID = 53   # SubcontractorInvoice, Exported (FINAL) — AC#14 negative
 
 ENFORCED_PRODUCT_ID   = 9    # "Trip"     — pricing-report "Restricted=true" row
