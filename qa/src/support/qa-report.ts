@@ -766,6 +766,79 @@ export const TANGO_58_AC = {
 } as const satisfies Record<string, AcClause>;
 
 /**
+ * Verbatim clauses for TANGO-78 (Assignment NTE reverts to old value due to
+ * stale UI state on Work Order Overview). Bug ticket — no formal "Acceptance
+ * Criteria" section exists, so the Problem statement, the Steps to Reproduce
+ * (the de facto AC: after the fix, step 5's "reverts" observation must NOT
+ * occur), and the Notes/Considerations constraints are quoted verbatim.
+ *
+ * Fix under test (branch TANGO-78): (1) the assignment edit sheet only
+ * submits subcontractor_not_to_exceed when the NTE field was actually
+ * changed in that sheet; (2) opening the edit sheet re-fetches the
+ * assignment from the server before binding, so edits start from server
+ * truth rather than the stale in-memory grid record.
+ *
+ * Source: https://facilitiesexchange.atlassian.net/browse/TANGO-78
+ */
+export const TANGO_78_AC = {
+  Problem: {
+    ref: 'Problem',
+    text: 'When a user updates an Assignment NTE and then makes a subsequent edit before the first save fully propagates, the Work Order Overview screen re-submits the stale (pre-update) NTE value, silently overwriting the correct one. From the user\'s perspective, the NTE appears to "revert magically."',
+  },
+  RootCause: {
+    ref: 'Root Cause',
+    text: 'The Work Order Overview holds the assignment NTE in browser memory. If the user performs a second action (edit, approval, or any grid save) while the first NTE update is still in flight or before the UI refreshes, the old value is re-submitted and overwrites the updated one on the backend. The backend has no way to reject a "stale" write.',
+  },
+  StepsToReproduce: {
+    ref: 'Steps to Reproduce #1-5',
+    text: '1. Open a Work Order with an assignment on the Work Order Overview screen. 2. Update the Assignment NTE and save. 3. Before the page refreshes or the UI re-renders the new value, make another edit to the assignment row on the Overview grid. 4. Save that second edit. 5. Observe: the NTE reverts to the value it held before step 2.',
+  },
+  CrossScreenTrigger: {
+    ref: 'Steps to Reproduce (cross-screen)',
+    text: 'This can also be triggered when another user or process (e.g., proposal approval from the Accounting screen) updates the NTE while the Overview is open in a browser tab.',
+  },
+  NotesPermissions: {
+    ref: 'Notes / Considerations (permissions)',
+    text: 'Care must be taken around permission-gated elements - some UI elements may be absent depending on permissions, and the fix should not break those cases.',
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
+ * Verbatim clauses for the TANGO-78 PR #7073 review regressions (Kevin /
+ * lebibin, CHANGES_REQUESTED 2026-07-08). These are not Jira AC — they are
+ * the reviewer's regression observations, quoted verbatim from the PR review
+ * threads, which the follow-up fix commits must make false.
+ *
+ * Source: https://github.com/facilitiesexchange/Fexy-Zamo/pull/7073
+ */
+export const TANGO_78_PR_AC = {
+  RegressionA1: {
+    ref: 'PR #7073 Regression A — Observation 1',
+    text: "the assignment row's Facility NTE column is blank — on develop it shows 500. (The value is only stored on the nested object now; the grid column reads the flat subcontractor_not_to_exceed.amount field, which the new delete prevents from ever being set on the record.)",
+  },
+  RegressionA2: {
+    ref: 'PR #7073 Regression A — Observation 2',
+    text: 'Double-click the same assignment row to reopen the edit sheet. Observation 2: the NTE field is empty instead of showing 500.',
+  },
+  RegressionA3: {
+    ref: 'PR #7073 Regression A — Observation 3',
+    text: "the created work order's assignment has no NTE — the second save submitted amount: '' because the record is still phantom (assignmentIsNew forces the NTE branch) and overwrote the 500 from step 2.",
+  },
+  RegressionANote: {
+    ref: 'PR #7073 Regression A — Note',
+    text: 'if the user saves the WO right after step 2 without reopening the sheet, the NTE persists correctly — the data loss needs the reopen-then-resave in steps 4–6, but the blank column/field (observations 1–2) shows up on the very first add.',
+  },
+  RegressionC: {
+    ref: 'PR #7073 Regression C',
+    text: "Double-click the assignment row to open the edit sheet. Do not change or save anything — you can hit Cancel immediately. Observe: the row's Category column is now empty and stays empty until the assignments store reloads.",
+  },
+  RegressionCMechanism: {
+    ref: 'PR #7073 Regression C — Mechanism',
+    text: "the new refetch does record.set(fresh.getData()), which re-runs the model's category convert on its own already-converted string output; the convert reads .category off a string and returns ''. It corrupts the in-memory grid record only — nothing is written to the server — but any save from that sheet happens against the corrupted record.",
+  },
+} as const satisfies Record<string, AcClause>;
+
+/**
  * Attach ticket + AC metadata to the running test. The reporter parses
  * these annotations to group tests by ticket and render the verbatim AC.
  *
